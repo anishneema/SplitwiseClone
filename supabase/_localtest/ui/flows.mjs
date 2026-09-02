@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 
 const COOKIE_DIR = process.env.COOKIE_DIR ?? "/tmp";
 
-const BASE = "http://localhost:3000";
+const BASE = process.env.BASE_URL ?? "http://localhost:3000";
 const OUT = process.env.SHOT_DIR ?? "/tmp/shots";
 const cookiesFor = (email) =>
   JSON.parse(readFileSync(`${COOKIE_DIR}/cookies-${email}.json`, "utf8"));
@@ -144,6 +144,8 @@ const balText = await anish.innerText("body");
 check("balances tab renders", balText.includes("Balances"));
 check("shows simplified transfers or all-square", /owes|owe|square/.test(balText));
 check("shows the per-person breakdown", /per person/i.test(balText));
+check("the room has a Shopping section",
+  await anish.getByRole("link", { name: "Shopping" }).isVisible());
 check("shows recorded payments", /payments/i.test(balText));
 await anish.screenshot({ path: `${OUT}/07-balances.png`, fullPage: true });
 
@@ -191,6 +193,206 @@ await anish.getByRole("button", { name: /Done/ }).first().click();
 await anish.waitForTimeout(600);
 check("completed chore shows under Done",
   (await anish.innerText("body")).includes("Clean the bathroom"));
+
+console.log("\n— shopping list tab —");
+await anish.goto(`${roomUrl}/shopping`, { waitUntil: "networkidle" });
+await nav.goto(`${roomUrl}/shopping`, { waitUntil: "networkidle" });
+const shopText = await anish.innerText("body");
+check("shopping tab renders", shopText.includes("Shopping list"));
+check("has To buy / On me / Bought filters",
+  shopText.includes("To buy") && shopText.includes("On me") && shopText.includes("Bought"));
+check("shows a seeded item and its quantity",
+  shopText.includes("Oat milk") && shopText.includes("2 cartons"), shopText.slice(0, 300));
+check("an already-bought item is not on the To buy list",
+  !shopText.includes("Dish soap"));
+await anish.getByRole("button", { name: /^Bought/ }).click();
+await anish.waitForTimeout(600);
+check("the bought item is under Bought",
+  (await anish.innerText("body")).includes("Dish soap"));
+await anish.getByRole("button", { name: /^To buy/ }).click();
+await anish.waitForTimeout(400);
+await anish.screenshot({ path: `${OUT}/11-shopping.png`, fullPage: true });
+
+console.log("\n— shopping: ask, claim and tick, live —");
+await anish.getByPlaceholder("Add something you need…").fill("Coffee beans");
+await anish.waitForTimeout(300);
+await anish.getByRole("button", { name: "Add", exact: true }).click();
+await anish.waitForTimeout(1200);
+check("item added", (await anish.innerText("body")).includes("Coffee beans"));
+
+let itemArrived = false;
+for (let i = 0; i < 40; i++) {
+  if ((await nav.innerText("body")).includes("Coffee beans")) { itemArrived = true; break; }
+  await nav.waitForTimeout(250);
+}
+check("item appeared on Nav's screen with no reload", itemArrived);
+
+// The item is Anish's request, so only Anish gets an editor on it. For Nav the
+// name is plain text -- no control that the database would refuse.
+check("Anish can open his own item for editing",
+  (await anish.getByRole("button", { name: /Coffee beans/ }).count()) === 1);
+check("an item defaults to being for whoever asked",
+  /Coffee beans[\s\S]{0,80}for you/.test(await anish.innerText("body")),
+  (await anish.innerText("body")).match(/Coffee beans[^\n]*\n[^\n]*/)?.[0] ?? "no row");
+
+// "Who it's for" takes several people, which is what decides the split later.
+await anish.getByPlaceholder("Add something you need…").fill("Sponges");
+await anish.waitForTimeout(300);
+await anish.getByRole("group", { name: "Who it's for" })
+  .getByRole("button", { name: "Everyone" }).click();
+await anish.getByRole("button", { name: "Add", exact: true }).click();
+await anish.waitForTimeout(1200);
+check("an item can be for the whole house",
+  /Sponges[\s\S]{0,80}for everyone/.test(await anish.innerText("body")),
+  (await anish.innerText("body")).match(/Sponges[^\n]*\n[^\n]*/)?.[0] ?? "no row");
+check("Nav gets no editor on someone else's item",
+  (await nav.getByRole("button", { name: /Coffee beans/ }).count()) === 0);
+
+const beansRow = nav.locator("li", { hasText: "Coffee beans" });
+await beansRow.getByRole("button", { name: "I'll get it" }).click();
+await nav.waitForTimeout(1000);
+let claimArrived = false;
+for (let i = 0; i < 40; i++) {
+  if (/Nav is getting it/.test(await anish.innerText("body"))) { claimArrived = true; break; }
+  await anish.waitForTimeout(250);
+}
+check("Nav claiming the item showed up on Anish's screen", claimArrived);
+
+await nav.getByRole("button", { name: /^On me/ }).click();
+await nav.waitForTimeout(600);
+check("the claimed item is listed under On me for Nav",
+  (await nav.innerText("body")).includes("Coffee beans"));
+
+await nav.getByRole("checkbox", { name: /Coffee beans/ }).click();
+await nav.waitForTimeout(800);
+let boughtArrived = false;
+for (let i = 0; i < 40; i++) {
+  // Once bought it leaves the To buy list Anish is looking at.
+  if (!(await anish.innerText("body")).includes("Coffee beans")) { boughtArrived = true; break; }
+  await anish.waitForTimeout(250);
+}
+check("Nav buying the item updated Anish's screen", boughtArrived);
+await anish.screenshot({ path: `${OUT}/12-shopping-live.png`, fullPage: true });
+
+console.log("\n— shopping: pricing a trip turns it into a charge —");
+// Nav has just bought Anish's coffee beans, plus Sam's dish soap from the seed.
+await nav.goto(`${roomUrl}/shopping`, { waitUntil: "networkidle" });
+await nav.waitForTimeout(800);
+const navShop = await nav.innerText("body");
+check("Nav is prompted to price what he bought", /You bought \d+ things?/.test(navShop),
+  navShop.slice(0, 300));
+
+await nav.getByRole("button", { name: "Add prices" }).click();
+await nav.waitForTimeout(800);
+check("the price sheet opens", await nav.getByText("What did it come to?").isVisible());
+const sheet = await nav.innerText("body");
+check("it lists what he bought", sheet.includes("Coffee beans") && sheet.includes("Dish soap"),
+  sheet.slice(0, 400));
+check("and who each thing was for, decided when it was asked for",
+  /Coffee beans[\s\S]{0,60}for Anish/.test(sheet), sheet.slice(0, 400));
+
+const addCharge = nav.getByRole("button", { name: /Add .* charge/ });
+check("nothing to charge until a price is typed", await addCharge.isDisabled());
+check("it says so", sheet.includes("Put a price against at least one thing"));
+
+await nav.getByLabel("Price of Coffee beans").fill("6.00");
+await nav.waitForTimeout(500);
+const priced = await nav.innerText("body");
+check("the preview charges it to the person it was for",
+  /Anish[\s\S]{0,40}owes you[\s\S]{0,40}\$6\.00/.test(priced),
+  priced.match(/comes back to you[\s\S]{0,160}/)?.[0] ?? "no preview");
+check("the button shows what will be charged",
+  /Add \$6\.00 charge/.test(await addCharge.innerText()), await addCharge.innerText());
+await nav.screenshot({ path: `${OUT}/13-charge-prices.png`, fullPage: true });
+
+await addCharge.click();
+await nav.waitForTimeout(1500);
+check("the sheet closes", (await nav.getByText("What did it come to?").count()) === 0);
+
+// Both are bought, so they live under Bought rather than To buy.
+await nav.getByRole("button", { name: /^Bought/ }).click();
+await nav.waitForTimeout(600);
+const afterCharge = await nav.innerText("body");
+check("the charged item reads as charged, with its price",
+  /Coffee beans[\s\S]{0,80}charged/.test(afterCharge) && afterCharge.includes("$6.00"),
+  afterCharge.match(/Coffee beans[^\n]*\n[^\n]*/)?.[0] ?? "no row");
+check("the unpriced item stays on the list for next time",
+  afterCharge.includes("Dish soap"));
+check("and is still waiting to be priced",
+  /You bought 1 thing/.test(afterCharge), afterCharge.slice(0, 200));
+
+// The charge is a normal expense, so it must reach Anish over the websocket.
+await anish.goto(roomUrl, { waitUntil: "networkidle" });
+let chargeArrived = false;
+for (let i = 0; i < 40; i++) {
+  const t = await anish.innerText("body");
+  if (t.includes("Shopping list") && t.includes("$6.00")) { chargeArrived = true; break; }
+  await anish.waitForTimeout(250);
+}
+check("the charge shows up on the expenses tab", chargeArrived,
+  (await anish.innerText("body")).slice(0, 400));
+
+await anish.goto(`${roomUrl}/balances`, { waitUntil: "networkidle" });
+await anish.waitForTimeout(600);
+check("and moves the balances",
+  /owes|owe/.test(await anish.innerText("body")));
+await anish.screenshot({ path: `${OUT}/14-charge-on-expenses.png`, fullPage: true });
+
+// The bug this guards: a trip that includes your own share must never read as
+// though you are being charged for it, or as money lent to yourself.
+console.log("\n— shopping: your own share is not a debt —");
+await anish.goto(`${roomUrl}/shopping`, { waitUntil: "networkidle" });
+await anish.waitForTimeout(800);
+// Seeded: Anish bought the bin bags, which are for the whole house.
+await anish.getByRole("button", { name: "Add prices" }).click();
+await anish.waitForTimeout(700);
+await anish.getByLabel("Price of Bin bags").fill("9.20");
+await anish.waitForTimeout(500);
+const shared = await anish.innerText("body");
+check("the preview leads with what actually comes back to you",
+  /What comes back to you[\s\S]{0,40}\$6\.13 of \$9\.20/.test(shared),
+  shared.match(/What comes back to you[\s\S]{0,120}/)?.[0] ?? "no preview");
+check("only the others are listed as owing",
+  /Nav Patel owes you/.test(shared) && /Sam Cole owes you/.test(shared)
+    && !/You owes you/.test(shared),
+  shared.match(/comes back to you[\s\S]{0,200}/)?.[0] ?? "");
+check("and your own share is called out as not charged to you",
+  /\$3\.07 is your own share[\s\S]{0,60}already paid it/.test(shared),
+  shared.match(/your own share[^\n]*\n?[^\n]*/)?.[0] ?? "no note");
+await anish.screenshot({ path: `${OUT}/15-own-share.png`, fullPage: true });
+
+await anish.getByRole("button", { name: /Add \$9\.20 charge/ }).click();
+await anish.waitForTimeout(1500);
+await anish.goto(roomUrl, { waitUntil: "networkidle" });
+await anish.waitForTimeout(800);
+const ledger = await anish.innerText("body");
+check("the expense records the full spend but only lends the others' share",
+  /You paid \$9\.20[\s\S]{0,60}you lent[\s\S]{0,20}\$6\.13/.test(ledger),
+  ledger.match(/You paid \$9\.20[\s\S]{0,80}/)?.[0] ?? "no row");
+
+// And a trip that is entirely your own is just your own spending.
+await anish.goto(`${roomUrl}/shopping`, { waitUntil: "networkidle" });
+await anish.waitForTimeout(600);
+await anish.getByRole("checkbox", { name: /Oat milk/ }).click();
+await anish.waitForTimeout(1200);
+await anish.getByRole("button", { name: "Add prices" }).click();
+await anish.waitForTimeout(700);
+await anish.getByLabel("Price of Oat milk").fill("4.50");
+await anish.waitForTimeout(500);
+const solo = await anish.innerText("body");
+check("a trip only for yourself says nothing comes back",
+  /Nothing — all of this was for you/.test(solo),
+  solo.match(/comes back to you[\s\S]{0,160}/)?.[0] ?? "no preview");
+await anish.getByRole("button", { name: /Add \$4\.50 charge/ }).click();
+await anish.waitForTimeout(1500);
+await anish.goto(roomUrl, { waitUntil: "networkidle" });
+await anish.waitForTimeout(800);
+const soloLedger = await anish.innerText("body");
+// The row is titled "Shopping list"; the item names go into the expense note.
+check("and is logged as unsplit rather than lent to yourself",
+  /You paid \$4\.50[\s\S]{0,60}not split/.test(soloLedger)
+    && !/You paid \$4\.50[\s\S]{0,60}you lent/.test(soloLedger),
+  soloLedger.match(/You paid \$4\.50[\s\S]{0,80}/)?.[0] ?? "no row");
 
 console.log("\n— settings / invites —");
 await anish.goto(`${roomUrl}/settings`, { waitUntil: "networkidle" });

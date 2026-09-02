@@ -95,6 +95,50 @@ export type Chore = {
   updated_at: string;
 };
 
+export type ShoppingItem = {
+  id: string;
+  room_id: string;
+  name: string;
+  /** Free text — "2 boxes", "whatever's cheapest" — never a number. */
+  quantity: string | null;
+  notes: string | null;
+  /** Who asked for it. The authorship column the RLS policies key on. */
+  requested_by: string;
+  /**
+   * Who the item is for, and therefore who gets charged for it — chosen when
+   * the item is requested, so the split is already settled by the time anyone
+   * buys it. Always at least one person.
+   */
+  for_users: string[];
+  /** Who agreed to buy it. Null means anyone can. */
+  assigned_to: string | null;
+  bought: boolean;
+  bought_at: string | null;
+  bought_by: string | null;
+  /** What it cost. Written only by charge_shopping_items(). */
+  price_cents: number | null;
+  /** The charge this ended up on, if any. Written only by that same RPC. */
+  expense_id: string | null;
+  position: number;
+  created_at: string;
+  updated_at: string;
+};
+
+/** One line of charge_shopping_items(): an item and what it cost. */
+export type ChargeLine = { item_id: string; price_cents: number };
+
+/**
+ * The columns a client may change on a shopping item. Mirrors the UPDATE column
+ * grant in 20260901000200 — price_cents and expense_id belong to
+ * charge_shopping_items(), and the stamps belong to the trigger.
+ */
+export type ShoppingItemPatch = Partial<
+  Pick<
+    ShoppingItem,
+    "name" | "quantity" | "notes" | "assigned_to" | "for_users" | "bought" | "position"
+  >
+>;
+
 export type RoomBalanceRow = {
   user_id: string;
   paid_cents: number;
@@ -152,6 +196,21 @@ export type Database = {
           done?: boolean;
           position?: number;
         }
+      >;
+      shopping_items: Table<
+        ShoppingItem,
+        // price_cents and expense_id are absent on purpose: the column grants
+        // in 20260901000200 reserve them for charge_shopping_items(), so a
+        // client that tries to set them is refused by Postgres. Leaving them
+        // out here turns that into a compile error instead.
+        Pick<ShoppingItem, "room_id" | "name" | "requested_by" | "for_users"> & {
+          quantity?: string | null;
+          notes?: string | null;
+          assigned_to?: string | null;
+          bought?: boolean;
+          position?: number;
+        },
+        ShoppingItemPatch
       >;
     };
     Views: Record<string, never>;
@@ -211,6 +270,15 @@ export type Database = {
       room_balances: {
         Args: { p_room_id: string };
         Returns: RoomBalanceRow[];
+      };
+      charge_shopping_items: {
+        Args: {
+          p_room_id: string;
+          p_description: string;
+          p_spent_at: string;
+          p_lines: ChargeLine[];
+        };
+        Returns: string;
       };
     };
     Enums: {

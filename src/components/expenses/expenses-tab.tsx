@@ -203,9 +203,14 @@ function ExpenseRow({
         </p>
       </div>
       <div className="shrink-0 text-right">
+        {/*
+          net === 0 while you are involved means you paid for it and your own
+          share is the whole thing — money you spent on yourself, which is not
+          the same as having nothing to do with it.
+        */}
         {personal || !involved || net === 0 ? (
           <span className="text-xs text-muted-foreground">
-            {personal ? "not split" : "not involved"}
+            {personal ? "not split" : !involved ? "not involved" : "all yours"}
           </span>
         ) : (
           <>

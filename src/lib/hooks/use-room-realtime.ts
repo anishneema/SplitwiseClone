@@ -8,6 +8,7 @@ export type RealtimeTable =
   | "expense_splits"
   | "settlements"
   | "chores"
+  | "shopping_items"
   | "room_members";
 
 export type ChannelStatus = "connecting" | "live" | "offline";

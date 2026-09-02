@@ -6,6 +6,7 @@ import type {
   ExpenseSplit,
   RoomBalanceRow,
   Settlement,
+  ShoppingItem,
 } from "@/lib/types/database";
 
 /**
@@ -76,6 +77,21 @@ export async function fetchChores(supabase: Client, roomId: string): Promise<Cho
     .eq("room_id", roomId)
     .order("done", { ascending: true })
     .order("due_date", { ascending: true, nullsFirst: false })
+    .order("created_at", { ascending: false });
+
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function fetchShoppingItems(
+  supabase: Client,
+  roomId: string,
+): Promise<ShoppingItem[]> {
+  const { data, error } = await supabase
+    .from("shopping_items")
+    .select("*")
+    .eq("room_id", roomId)
+    .order("bought", { ascending: true })
     .order("created_at", { ascending: false });
 
   if (error) throw error;

@@ -16,6 +16,7 @@ export function RoomTabs({ roomId }: { roomId: string }) {
     { href: base, label: "Expenses" },
     { href: `${base}/balances`, label: "Balances" },
     { href: `${base}/chores`, label: "Chores" },
+    { href: `${base}/shopping`, label: "Shopping" },
     { href: `${base}/settings`, label: "Settings" },
   ];
 

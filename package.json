@@ -14,10 +14,15 @@
     "db:stop": "supabase stop",
     "db:reset": "supabase db reset",
     "db:seed": "node supabase/_localtest/seed-ui.mjs",
+    "db:fresh": "npm run db:reset && npm run --silent db:seed > /tmp/seed.json && npm run --silent db:sessions && echo 'seed -> /tmp/seed.json, cookies -> /tmp/cookies-*.json'",
+    "db:sessions": "node supabase/_localtest/mint-session.mjs anish.e2e@example.com > /tmp/cookies-anish.json && node supabase/_localtest/mint-session.mjs nav.e2e@example.com > /tmp/cookies-nav.json && node supabase/_localtest/mint-session.mjs sam.e2e@example.com > /tmp/cookies-sam.json",
     "db:types": "supabase gen types typescript --local > src/lib/types/database.ts",
     "test:db": "node supabase/_localtest/e2e.mjs",
     "check": "npm run typecheck && npm run lint && npm run test",
-    "test:sql": "./supabase/_localtest/run-sql-checks.sh"
+    "test:sql": "./supabase/_localtest/run-sql-checks.sh",
+    "test:ui": "node supabase/_localtest/ui/flows.mjs && node supabase/_localtest/ui/splits.mjs",
+    "test:local": "npm run check && npm run test:sql && npm run test:db",
+    "ui:open": "node supabase/_localtest/ui/open.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

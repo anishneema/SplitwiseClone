@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { MemberAvatar } from "@/components/member-avatar";
-import { AssigneePicker } from "@/components/chores/assignee-picker";
+import { AssigneePicker } from "@/components/assignee-picker";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";

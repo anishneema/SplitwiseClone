@@ -22,7 +22,7 @@ import { readFileSync } from "node:fs";
 
 const COOKIE_DIR = process.env.COOKIE_DIR ?? "/tmp";
 
-const BASE = "http://localhost:3000";
+const BASE = process.env.BASE_URL ?? "http://localhost:3000";
 const room = JSON.parse(readFileSync(process.env.SEED_FILE ?? "/tmp/seed.json", "utf8")).roomId;
 let pass = 0; const fails = []; const errs = [];
 const check = (l, ok, d = "") => ok
@@ -52,34 +52,62 @@ page.on("console", (m) => { if (m.type() === "error") errs.push(m.text().slice(0
 
 await page.goto(`${BASE}/rooms/${room}`, { waitUntil: "networkidle" });
 
-console.log("\n— editing an existing expense prefills the form —");
+// "Internet bill" is seeded as Nav's entry, so for Anish it is somebody
+// else's charge: visible in full, but not his to change.
+console.log("\n— someone else's charge opens read-only —");
 await page.getByText("Internet bill").click();
 await page.waitForTimeout(800);
-check("edit dialog opens", await page.getByText("Edit expense").isVisible());
-check("description prefilled",
-  (await page.getByLabel("What was it for?").inputValue()) === "Internet bill");
-check("amount prefilled",
+check("dialog opens as details, not an editor",
+  await page.getByText("Expense details").isVisible());
+check("it says who entered it and that only they can change it",
+  /Nav added this one\. Only they can change or delete it\./.test(
+    await page.innerText("body")));
+check("the figures are still all there",
+  (await page.getByLabel("What was it for?").inputValue()) === "Internet bill" &&
   (await page.getByLabel("Amount").inputValue()) === "45.00",
   await page.getByLabel("Amount").inputValue());
 check("reopens in the mode it was created in",
   (await page.getByRole("button", { name: /Exact amounts/ }).first().getAttribute("aria-pressed")) === "true");
-const shares = page.locator('input[id^="share-"]');
-check("exact shares prefilled 20/15/10",
-  (await shares.nth(0).inputValue()) === "20.00" &&
-  (await shares.nth(1).inputValue()) === "15.00" &&
-  (await shares.nth(2).inputValue()) === "10.00",
-  `${await shares.nth(0).inputValue()}/${await shares.nth(1).inputValue()}/${await shares.nth(2).inputValue()}`);
-check("payer prefilled to Nav",
-  (await page.getByRole("button", { name: /Nav/ }).first().getAttribute("aria-pressed")) === "true");
-check("delete is offered when editing",
-  await page.getByRole("button", { name: "Delete" }).isVisible());
+{
+  const shares = page.locator('input[id^="share-"]');
+  check("exact shares prefilled 20/15/10",
+    (await shares.nth(0).inputValue()) === "20.00" &&
+    (await shares.nth(1).inputValue()) === "15.00" &&
+    (await shares.nth(2).inputValue()) === "10.00",
+    `${await shares.nth(0).inputValue()}/${await shares.nth(1).inputValue()}/${await shares.nth(2).inputValue()}`);
+  check("payer prefilled to Nav",
+    (await page.getByRole("button", { name: /Nav/ }).first().getAttribute("aria-pressed")) === "true");
+  check("the fields cannot be typed into",
+    await page.getByLabel("What was it for?").isDisabled() &&
+    await page.getByLabel("Amount").isDisabled());
+  check("no delete on someone else's charge",
+    (await page.getByRole("button", { name: "Delete" }).count()) === 0);
+  check("nothing to save either",
+    (await page.getByRole("button", { name: "Save" }).count()) === 0);
+}
+// Two things are called Close: the footer button and the dialog's own X.
+await page.getByRole("button", { name: "Close" }).first().click();
+await page.waitForTimeout(500);
 
-console.log("\n— editing recomputes balances —");
+// "Costco run" is Anish's own entry, so the full editor is available on it.
+console.log("\n— editing your own charge recomputes balances —");
+await page.getByText("Costco run").click();
+await page.waitForTimeout(800);
+check("your own charge opens as an editor",
+  await page.getByText("Edit expense").isVisible());
+check("delete is offered on your own charge",
+  await page.getByRole("button", { name: "Delete" }).isVisible());
+await page.getByRole("button", { name: /Exact amounts/ }).first().click();
+await page.waitForTimeout(400);
+const shares = page.locator('input[id^="share-"]');
+check("the equal shares carry over into exact mode",
+  (await shares.nth(0).inputValue()) === "10.00",
+  await shares.nth(0).inputValue());
 await page.getByLabel("Amount").fill("60.00");
 await page.waitForTimeout(400);
 check("changing the total invalidates the old shares",
   (await page.innerText("body")).includes("still to assign"));
-await shares.nth(0).fill("35.00");
+await shares.nth(0).fill("40.00");
 await page.waitForTimeout(400);
 const saveEdit = page.getByRole("button", { name: "Save" });
 check("save enabled once it balances again", await saveEdit.isEnabled());

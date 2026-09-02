@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
-import { AssigneePicker } from "@/components/chores/assignee-picker";
+import { AssigneePicker } from "@/components/assignee-picker";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";

@@ -76,6 +76,18 @@ async function makeUser(email, fullName) {
   });
   if (signInError) throw signInError;
 
+  // Hand the access token to Realtime explicitly, exactly as
+  // src/lib/hooks/use-room-realtime.ts has to. Without this, whichever channel
+  // subscribes first races the token reaching the realtime client and can be
+  // evaluated as `anon` -- which this schema grants nothing. The channel still
+  // reports SUBSCRIBED and then silently delivers no events, so the symptom is
+  // a realtime check that fails with an empty payload list for no visible
+  // reason, while a later one on the same client passes.
+  const {
+    data: { session },
+  } = await client.auth.getSession();
+  await client.realtime.setAuth(session.access_token);
+
   return { id: userId, email, client };
 }
 
@@ -236,6 +248,52 @@ console.log("\n— invariant guards through the API —");
   check("rooms can't be inserted outside create_room()", Boolean(sneaky.error));
 }
 
+console.log("\n— a charge belongs to whoever entered it —");
+{
+  // A personal split, so the scratch charge can't disturb anyone else's
+  // balance assertions if a check below fails before it is cleaned up.
+  const { data: id, error } = await anish.client.rpc("create_expense", {
+    p_room_id: room.id, p_description: "Authorship scratch", p_amount_cents: 500,
+    p_paid_by: anish.id, p_spent_at: "2026-08-30", p_split_type: "personal",
+    p_notes: null, p_splits: [{ user_id: anish.id, owed_cents: 500 }],
+  });
+  check("the author can add a charge", !error && Boolean(id), error?.message);
+
+  // A failing USING clause on DELETE is not an error -- it matches no rows. So
+  // .select() is required, otherwise `data` is null and nothing is being counted.
+  const theft = await nav.client.from("expenses").delete().eq("id", id).select();
+  check("a non-author cannot delete a charge",
+    Boolean(theft.error) || (theft.data ?? []).length === 0,
+    `deleted ${theft.data?.length} row(s)`);
+
+  const { data: survivors } = await nav.client.from("expenses").select("id").eq("id", id);
+  check("the charge is still there afterwards", (survivors ?? []).length === 1);
+
+  const edit = await nav.client.rpc("update_expense", {
+    p_expense_id: id, p_description: "Hijacked", p_amount_cents: 500,
+    p_paid_by: nav.id, p_spent_at: "2026-08-30", p_split_type: "personal",
+    p_notes: null, p_splits: [{ user_id: nav.id, owed_cents: 500 }],
+  });
+  check("a non-author cannot edit a charge", Boolean(edit.error), edit.error?.message);
+  check("the refusal explains why",
+    edit.error?.message?.includes("who added this charge"), edit.error?.message);
+
+  const own = await anish.client.rpc("update_expense", {
+    p_expense_id: id, p_description: "Authorship scratch (edited)", p_amount_cents: 600,
+    p_paid_by: anish.id, p_spent_at: "2026-08-30", p_split_type: "personal",
+    p_notes: null, p_splits: [{ user_id: anish.id, owed_cents: 600 }],
+  });
+  check("the author can edit their own charge", !own.error, own.error?.message);
+
+  const gone = await anish.client.from("expenses").delete().eq("id", id).select();
+  check("the author can delete their own charge",
+    !gone.error && (gone.data ?? []).length === 1, gone.error?.message);
+
+  const { data: orphans } = await anish.client.from("expense_splits")
+    .select("id").eq("expense_id", id);
+  check("its splits cascade away with it", (orphans ?? []).length === 0);
+}
+
 console.log("\n— settle up —");
 {
   const { error } = await nav.client.from("settlements").insert({
@@ -289,6 +347,78 @@ let choreId;
     Boolean(assignOutsider.error) || (assignOutsider.data ?? []).length === 0);
 }
 
+console.log("\n— shopping list —");
+{
+  const { data: item, error } = await anish.client.from("shopping_items").insert({
+    room_id: room.id, name: "Oat milk", quantity: "2 cartons", requested_by: anish.id,
+    for_users: [anish.id],
+  }).select().single();
+  check("adding an item works", !error && Boolean(item?.id), error?.message);
+  check("a new item starts unclaimed and unbought",
+    item?.assigned_to === null && item?.bought === false);
+
+  const spoofed = await nav.client.from("shopping_items").insert({
+    room_id: room.id, name: "Not mine to ask for", requested_by: anish.id,
+    for_users: [anish.id],
+  });
+  check("can't add an item in someone else's name", Boolean(spoofed.error));
+
+  const rename = await nav.client.from("shopping_items")
+    .update({ name: "Almond milk" }).eq("id", item.id).select();
+  check("a non-requester cannot change what an item is", Boolean(rename.error),
+    rename.error?.message);
+
+  const claim = await nav.client.from("shopping_items")
+    .update({ assigned_to: nav.id }).eq("id", item.id).select().single();
+  check("anyone in the room can claim an item", claim.data?.assigned_to === nav.id,
+    claim.error?.message);
+
+  const unclaim = await nav.client.from("shopping_items")
+    .update({ assigned_to: null }).eq("id", item.id).select().single();
+  check("and can put it back down", unclaim.data?.assigned_to === null,
+    unclaim.error?.message);
+
+  const handOff = await sam.client.from("shopping_items")
+    .update({ assigned_to: nav.id }).eq("id", item.id).select();
+  check("but cannot hand an item they don't hold to a third person",
+    Boolean(handOff.error), handOff.error?.message);
+
+  const bought = await nav.client.from("shopping_items")
+    .update({ bought: true }).eq("id", item.id).select().single();
+  check("anyone can tick an item off", bought.data?.bought === true, bought.error?.message);
+  check("the purchase is attributed to whoever ticked it",
+    bought.data?.bought_by === nav.id, `got ${bought.data?.bought_by}`);
+  check("bought_at is stamped by the database", Boolean(bought.data?.bought_at));
+
+  const forged = await nav.client.from("shopping_items")
+    .update({ bought: false }).eq("id", item.id).select().single();
+  check("un-ticking clears the stamps",
+    forged.data?.bought_by === null && forged.data?.bought_at === null);
+
+  const theft = await nav.client.from("shopping_items")
+    .delete().eq("id", item.id).select();
+  check("a non-requester cannot delete an item",
+    Boolean(theft.error) || (theft.data ?? []).length === 0,
+    `deleted ${theft.data?.length} row(s)`);
+
+  const owner = await anish.client.from("shopping_items")
+    .update({ name: "Oat milk (barista)", quantity: "1 carton", assigned_to: sam.id })
+    .eq("id", item.id).select().single();
+  check("the requester can rename, re-size and re-assign their own item",
+    owner.data?.name === "Oat milk (barista)" && owner.data?.assigned_to === sam.id,
+    owner.error?.message);
+
+  const toOutsider = await anish.client.from("shopping_items")
+    .update({ assigned_to: nosy.id }).eq("id", item.id).select();
+  check("an item can't be assigned to a non-member",
+    Boolean(toOutsider.error) || (toOutsider.data ?? []).length === 0);
+
+  const removed = await anish.client.from("shopping_items")
+    .delete().eq("id", item.id).select();
+  check("the requester can delete their own item",
+    !removed.error && (removed.data ?? []).length === 1, removed.error?.message);
+}
+
 console.log("\n— my_rooms summary —");
 {
   const { data } = await nav.client.rpc("my_rooms");
@@ -304,8 +434,186 @@ console.log("\n— my_rooms summary —");
   check("outsider sees no rooms", (nothing ?? []).length === 0);
 }
 
+console.log("\n— charging a shopping trip —");
+{
+  const { data: rows, error } = await anish.client.from("shopping_items").insert([
+    { room_id: room.id, name: `Oat milk ${RUN}`, requested_by: anish.id,
+      for_users: [anish.id] },
+    { room_id: room.id, name: `Paper towels ${RUN}`, requested_by: anish.id,
+      for_users: [anish.id, nav.id, sam.id] },
+  ]).select();
+  check("adding items for one person and for the house works",
+    !error && (rows ?? []).length === 2, error?.message);
+
+  const milk = rows.find((r) => r.name.startsWith("Oat milk"));
+  const towels = rows.find((r) => r.name.startsWith("Paper towels"));
+
+  const badFor = await anish.client.from("shopping_items").insert({
+    room_id: room.id, name: "For an outsider", requested_by: anish.id,
+    for_users: [nosy.id],
+  });
+  check("an item can't be for a non-member", Boolean(badFor.error));
+
+  const emptyFor = await anish.client.from("shopping_items").insert({
+    room_id: room.id, name: "For nobody", requested_by: anish.id, for_users: [],
+  });
+  check("an item must be for at least one person", Boolean(emptyFor.error));
+
+  const reaim = await nav.client.from("shopping_items")
+    .update({ for_users: [nav.id] }).eq("id", milk.id).select();
+  check("a non-requester cannot change who an item is for",
+    Boolean(reaim.error), reaim.error?.message);
+
+  // Neither column is in the UPDATE grant, so PostgREST is refused outright.
+  const forgePrice = await anish.client.from("shopping_items")
+    .update({ price_cents: 1 }).eq("id", milk.id).select();
+  check("price_cents is not client-writable", Boolean(forgePrice.error),
+    forgePrice.error?.message);
+  const forgeLink = await anish.client.from("shopping_items")
+    .update({ expense_id: null }).eq("id", milk.id).select();
+  check("expense_id is not client-writable", Boolean(forgeLink.error),
+    forgeLink.error?.message);
+
+  // Nav does the shop.
+  await nav.client.from("shopping_items")
+    .update({ bought: true }).in("id", [milk.id, towels.id]);
+
+  const tooEarly = await nav.client.rpc("charge_shopping_items", {
+    p_room_id: room.id, p_description: "Nothing bought", p_spent_at: "2026-08-30",
+    p_lines: [{ item_id: milk.id, price_cents: 0 }],
+  });
+  check("a line needs a price above $0", Boolean(tooEarly.error), tooEarly.error?.message);
+
+  const notMine = await anish.client.rpc("charge_shopping_items", {
+    p_room_id: room.id, p_description: "Not my shop", p_spent_at: "2026-08-30",
+    p_lines: [{ item_id: milk.id, price_cents: 420 }],
+  });
+  check("you can't charge a purchase you didn't make", Boolean(notMine.error),
+    notMine.error?.message);
+
+  // $4.20 of oat milk for Anish; $9.20 of towels three ways -> 307/307/306.
+  const { data: expenseId, error: chargeError } = await nav.client
+    .rpc("charge_shopping_items", {
+      p_room_id: room.id, p_description: "Weekly shop", p_spent_at: "2026-08-30",
+      p_lines: [
+        { item_id: milk.id, price_cents: 420 },
+        { item_id: towels.id, price_cents: 920 },
+      ],
+    });
+  check("charging the trip works", !chargeError && Boolean(expenseId),
+    chargeError?.message);
+
+  const { data: expense } = await nav.client.from("expenses")
+    .select("*").eq("id", expenseId).single();
+  check("the charge totals the lines", expense?.amount_cents === 1340,
+    `got ${expense?.amount_cents}`);
+  check("paid by whoever bought them", expense?.paid_by === nav.id);
+  check("and authored by them, so it's theirs to correct",
+    expense?.created_by === nav.id);
+  check("recorded as an exact split", expense?.split_type === "exact");
+  check("the note lists what was bought",
+    expense?.notes?.includes("Oat milk") && expense?.notes?.includes("Paper towels"),
+    expense?.notes);
+
+  const { data: splits } = await nav.client.from("expense_splits")
+    .select("*").eq("expense_id", expenseId);
+  const owed = Object.fromEntries((splits ?? []).map((x) => [x.user_id, x.owed_cents]));
+  check("Anish owes his oat milk plus a third of the towels",
+    owed[anish.id] === 727, `got ${owed[anish.id]}`);
+  check("Nav owes his third of the towels", owed[nav.id] === 307, `got ${owed[nav.id]}`);
+  check("Sam gets the odd penny", owed[sam.id] === 306, `got ${owed[sam.id]}`);
+  check("the splits add up to the trip total exactly",
+    (splits ?? []).reduce((sum, x) => sum + x.owed_cents, 0) === 1340);
+
+  const { data: linked } = await nav.client.from("shopping_items")
+    .select("*").in("id", [milk.id, towels.id]);
+  check("both items now point at the charge",
+    (linked ?? []).length === 2 && linked.every((i) => i.expense_id === expenseId));
+  check("and remember what they cost",
+    linked?.find((i) => i.id === milk.id)?.price_cents === 420);
+
+  const again = await nav.client.rpc("charge_shopping_items", {
+    p_room_id: room.id, p_description: "Again", p_spent_at: "2026-08-30",
+    p_lines: [{ item_id: milk.id, price_cents: 420 }],
+  });
+  check("an item already on a charge can't be charged again", Boolean(again.error),
+    again.error?.message);
+
+  const untick = await nav.client.from("shopping_items")
+    .update({ bought: false }).eq("id", milk.id).select();
+  check("a charged item can't be un-ticked",
+    Boolean(untick.error) || (untick.data ?? []).length === 0, untick.error?.message);
+
+  // Deleting the charge hands the items back, price remembered.
+  await nav.client.from("expenses").delete().eq("id", expenseId);
+  const { data: returned } = await nav.client.from("shopping_items")
+    .select("*").in("id", [milk.id, towels.id]);
+  check("deleting the charge returns its items to the queue",
+    (returned ?? []).every((i) => i.expense_id === null && i.bought));
+  check("with the price still remembered",
+    returned?.find((i) => i.id === milk.id)?.price_cents === 420);
+
+  await anish.client.from("shopping_items").delete().in("id", [milk.id, towels.id]);
+
+  // Buying for yourself and someone else must bill only the someone else. Your
+  // own share cancels against what you paid; it is not a debt to yourself.
+  const before = Object.fromEntries(
+    ((await nav.client.rpc("room_balances", { p_room_id: room.id })).data ?? [])
+      .map((b) => [b.user_id, b.net_cents]),
+  );
+
+  const { data: shared } = await nav.client.from("shopping_items").insert({
+    room_id: room.id, name: `Shared razors ${RUN}`, requested_by: nav.id,
+    for_users: [nav.id, anish.id],
+  }).select().single();
+  await nav.client.from("shopping_items").update({ bought: true }).eq("id", shared.id);
+  const { data: sharedCharge } = await nav.client.rpc("charge_shopping_items", {
+    p_room_id: room.id, p_description: "Shared razors", p_spent_at: "2026-08-30",
+    p_lines: [{ item_id: shared.id, price_cents: 7000 }],
+  });
+
+  const after = Object.fromEntries(
+    ((await nav.client.rpc("room_balances", { p_room_id: room.id })).data ?? [])
+      .map((b) => [b.user_id, b.net_cents]),
+  );
+  check("buying for yourself and someone else only bills the someone else",
+    after[nav.id] - before[nav.id] === 3500,
+    `Nav moved by ${after[nav.id] - before[nav.id]}, expected 3500`);
+  check("the other person owes just their own share",
+    before[anish.id] - after[anish.id] === 3500,
+    `Anish moved by ${before[anish.id] - after[anish.id]}`);
+
+  // Entirely your own: logged, but a personal expense that moves nobody.
+  const { data: solo } = await nav.client.from("shopping_items").insert({
+    room_id: room.id, name: `Own shampoo ${RUN}`, requested_by: nav.id,
+    for_users: [nav.id],
+  }).select().single();
+  await nav.client.from("shopping_items").update({ bought: true }).eq("id", solo.id);
+  const { data: soloCharge } = await nav.client.rpc("charge_shopping_items", {
+    p_room_id: room.id, p_description: "Own shampoo", p_spent_at: "2026-08-30",
+    p_lines: [{ item_id: solo.id, price_cents: 1000 }],
+  });
+
+  const { data: soloExpense } = await nav.client.from("expenses")
+    .select("*").eq("id", soloCharge).single();
+  check("a trip only for yourself is recorded as personal, not a one-way split",
+    soloExpense?.split_type === "personal", `got ${soloExpense?.split_type}`);
+
+  const afterSolo = Object.fromEntries(
+    ((await nav.client.rpc("room_balances", { p_room_id: room.id })).data ?? [])
+      .map((b) => [b.user_id, b.net_cents]),
+  );
+  check("spending on yourself moves nobody's balance",
+    afterSolo[nav.id] === after[nav.id] && afterSolo[anish.id] === after[anish.id],
+    `Nav moved by ${afterSolo[nav.id] - after[nav.id]}`);
+
+  await nav.client.from("expenses").delete().in("id", [sharedCharge, soloCharge]);
+  await nav.client.from("shopping_items").delete().in("id", [shared.id, solo.id]);
+}
+
 console.log("\n— RLS isolation for a signed-in non-member —");
-for (const table of ["expenses", "expense_splits", "settlements", "chores", "room_members"]) {
+for (const table of ["expenses", "expense_splits", "settlements", "chores",
+                     "shopping_items", "room_members"]) {
   const { data } = await nosy.client.from(table).select("*");
   check(`outsider reads 0 rows from ${table}`, (data ?? []).length === 0,
     `got ${data?.length}`);
@@ -402,6 +710,48 @@ console.log("\n— realtime —");
   check("realtime does not leak to a non-member", leaked.length === 0,
     `received ${leaked.length} events`);
   await nosy.client.removeChannel(nosyChannel);
+}
+
+console.log("\n— realtime for the shopping list —");
+{
+  // Its own block: a new table only reaches Realtime if the migration added it
+  // to the supabase_realtime publication, and nothing else here would catch a
+  // missing ALTER PUBLICATION.
+  const received = [];
+  const channel = nav.client.channel(`shopping:${room.id}`);
+  const subscribed = new Promise((resolve, reject) => {
+    channel
+      .on("postgres_changes",
+        { event: "*", schema: "public", table: "shopping_items",
+          filter: `room_id=eq.${room.id}` },
+        (payload) => received.push(payload))
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") resolve();
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") reject(new Error(status));
+      });
+  });
+
+  try {
+    await subscribed;
+    const rt = await anish.client.from("shopping_items").insert({
+      room_id: room.id, name: "Bin bags", requested_by: anish.id,
+      for_users: [anish.id],
+    });
+    console.log("    [debug] insert error:", rt.error?.message ?? "none");
+    console.log("    [debug] channel state:", channel.state);
+
+    const deadline = Date.now() + 8000;
+    while (received.length < 1 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    check("a new shopping item reaches the other roommate",
+      received.some((p) => p.eventType === "INSERT" && p.new?.name === "Bin bags"),
+      JSON.stringify(received.map((p) => p.eventType)));
+  } catch (e) {
+    check("shopping list realtime channel subscribes", false, e.message);
+  } finally {
+    await nav.client.removeChannel(channel);
+  }
 }
 
 console.log(`\n${"=".repeat(60)}`);

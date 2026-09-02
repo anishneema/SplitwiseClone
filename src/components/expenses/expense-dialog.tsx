@@ -61,6 +61,14 @@ export function ExpenseDialog({
   const editing = Boolean(expense);
 
   /**
+   * Only the person who entered a charge may change or remove it. The database
+   * is what enforces that -- the expenses_delete policy and the authorship
+   * check inside update_expense() -- so for everyone else this dialog opens
+   * read-only rather than offering controls whose write would be refused.
+   */
+  const canEdit = !expense || expense.created_by === meId;
+
+  /**
    * State is initialized straight from props rather than synced in an effect.
    * The parent gives this component a fresh `key` every time the dialog opens,
    * so React remounts it and these initializers run again — which is the
@@ -102,6 +110,9 @@ export function ExpenseDialog({
 
   const amountCents = parseDollarsToCents(amountInput);
   const nameById = new Map(members.map((m) => [m.id, m.display_name]));
+  const authorLabel = expense
+    ? firstName(nameById.get(expense.created_by) ?? "Someone")
+    : "";
 
   /**
    * Every mode resolves to the same `{ user_id, owed_cents }` list that the
@@ -195,7 +206,7 @@ export function ExpenseDialog({
   const splitPreview = new Map(splits.map((s) => [s.user_id, s.owed_cents]));
 
   async function save() {
-    if (problem || amountCents === null) return;
+    if (!canEdit || problem || amountCents === null) return;
     setSaving(true);
     setSubmitError(null);
 
@@ -226,7 +237,7 @@ export function ExpenseDialog({
   }
 
   async function remove() {
-    if (!expense) return;
+    if (!expense || !canEdit) return;
     setSaving(true);
     const supabase = createClient();
     const { error } = await supabase.from("expenses").delete().eq("id", expense.id);
@@ -244,15 +255,19 @@ export function ExpenseDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-h-[92dvh] gap-0 overflow-y-auto sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>{editing ? "Edit expense" : "Add an expense"}</DialogTitle>
+          <DialogTitle>
+            {!canEdit ? "Expense details" : editing ? "Edit expense" : "Add an expense"}
+          </DialogTitle>
           <DialogDescription>
-            {editing
-              ? "Changes update everyone's balances right away."
-              : "Everyone in the room sees this immediately."}
+            {!canEdit
+              ? `${authorLabel} added this one. Only they can change or delete it.`
+              : editing
+                ? "Changes update everyone's balances right away."
+                : "Everyone in the room sees this immediately."}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-5 py-5">
+        <fieldset disabled={!canEdit} className="space-y-5 py-5">
           <div className="space-y-2">
             <Label htmlFor="expense-description">What was it for?</Label>
             <Input
@@ -513,30 +528,40 @@ export function ExpenseDialog({
               {submitError}
             </p>
           ) : null}
-        </div>
+        </fieldset>
 
         <DialogFooter className="sticky bottom-0 -mx-6 gap-2 border-t bg-background px-6 py-4 sm:justify-between">
-          {editing ? (
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={remove}
-              disabled={saving}
-              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
-            >
-              Delete
-            </Button>
+          {canEdit ? (
+            <>
+              {editing ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={remove}
+                  disabled={saving}
+                  className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                >
+                  Delete
+                </Button>
+              ) : (
+                <span className="hidden sm:block" />
+              )}
+              <div className="flex flex-1 items-center justify-end gap-3">
+                {problem ? (
+                  <span className="text-right text-xs text-muted-foreground">{problem}</span>
+                ) : null}
+                <Button type="button" onClick={save} disabled={saving || Boolean(problem)}>
+                  {saving ? "Saving…" : editing ? "Save" : "Add expense"}
+                </Button>
+              </div>
+            </>
           ) : (
-            <span className="hidden sm:block" />
+            <div className="flex flex-1 justify-end">
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Close
+              </Button>
+            </div>
           )}
-          <div className="flex flex-1 items-center justify-end gap-3">
-            {problem ? (
-              <span className="text-right text-xs text-muted-foreground">{problem}</span>
-            ) : null}
-            <Button type="button" onClick={save} disabled={saving || Boolean(problem)}>
-              {saving ? "Saving…" : editing ? "Save" : "Add expense"}
-            </Button>
-          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>
