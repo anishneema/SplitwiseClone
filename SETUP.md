@@ -114,7 +114,9 @@ npx supabase db push
 1. Supabase dashboard → **Authentication** → **Sign In / Providers** → **Google**.
 2. Enable it, paste the client ID and secret, save.
 3. **Authentication** → **URL Configuration**:
-   - **Site URL**: your production URL (e.g. `https://roomsplit.vercel.app`)
+   - **Site URL**: your production URL — for this project that is
+     `https://roomsplit-nine.vercel.app` (the Vercel-assigned alias; note it is
+     *not* `roomsplit.vercel.app`, which belongs to nobody)
    - **Redirect URLs**: add both
      ```
      http://localhost:3000/**
