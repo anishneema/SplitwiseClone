@@ -1,0 +1,123 @@
+Roomsplit — requirements to work on this project
+================================================
+
+This is a Node/TypeScript project, so npm packages are pinned in package.json
+and package-lock.json, not here. This file lists everything *outside* those:
+the tooling, accounts and environment a new contributor has to have in place.
+Setup steps in prose are in SETUP.md; architecture is in README.md.
+
+
+1. Machine tooling (required)
+-----------------------------
+Node.js            >= 20.9.0    Next.js 16's floor; 22 LTS is what this is developed on
+npm                >= 10        ships with Node 22; `npm ci` to install exactly the lockfile
+Git                any recent
+Docker Desktop     any recent   must be *running* for the local Supabase stack
+                                and for `npm run test:sql`, which spins up a
+                                throwaway postgres:17-alpine container
+bash + coreutils   POSIX shell  `supabase/_localtest/run-sql-checks.sh` is a bash script
+                                (macOS and Linux are fine; on Windows use WSL2)
+
+Nothing needs to be installed globally. The Supabase CLI is a devDependency,
+so `npm run db:*` and `npx supabase ...` use the pinned local copy.
+
+Disk/memory: the local Supabase stack pulls several GB of Docker images on
+first `npm run db:start`.
+
+
+2. Optional tooling (only for specific tasks)
+---------------------------------------------
+Playwright + chromium   for the browser checks and for signing in locally.
+                        Deliberately not a project dependency — install on demand:
+                            npm i --no-save playwright && npx playwright install chromium
+                        Needed by: npm run ui:open, npm run test:ui
+
+Vercel CLI              only if you deploy or pull hosted env vars:
+                            npm i -g vercel     (or use npx vercel)
+
+Google Chrome/Chromium  any modern browser for manual two-window realtime testing
+
+
+3. Accounts (hosted only — local development needs none)
+--------------------------------------------------------
+Supabase          https://supabase.com/dashboard — hosts Postgres, Auth, Realtime
+Google Cloud      https://console.cloud.google.com/apis/credentials — the OAuth
+                  client for Google sign-in. Its authorised redirect URI is the
+                  *Supabase* callback, not the app's URL.
+Vercel            deployment target
+
+Local development is a throwaway Docker database full of fake roommates and
+touches none of these. Google sign-in does not work against the local stack;
+use `npm run ui:open`, which opens pre-authenticated browser windows.
+
+
+4. Environment variables
+------------------------
+Copy .env.example to .env.local and fill in your hosted project's values.
+
+Required (client-visible, safe to expose — RLS in Postgres is the security
+boundary, not the secrecy of these):
+
+  NEXT_PUBLIC_SUPABASE_URL         https://<project-ref>.supabase.co
+  NEXT_PUBLIC_SUPABASE_ANON_KEY    the anon / publishable key
+
+Optional:
+
+  NEXT_PUBLIC_SITE_URL             production URL; used to build invite links.
+                                   Leave unset locally. Set it in Vercel.
+
+File precedence — do not "fix" this by editing the wrong one:
+
+  .env.development.local   the local Docker stack. `next dev` resolves this
+                           file BEFORE .env.local, so `npm run dev` always
+                           talks to Docker. Committed-by-convention absent;
+                           delete or rename it if you deliberately want a dev
+                           server against the hosted project.
+  .env.local               the hosted project. Used by `next build` and Vercel.
+
+All .env* files are gitignored. The local-test scripts under
+supabase/_localtest/ default to the local stack's well-known URL and demo keys,
+so they need no environment at all; override with SUPABASE_URL,
+SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY if you point them elsewhere.
+
+
+5. First run
+------------
+    npm install              (or `npm ci` for an exact lockfile install)
+    npm run db:start         Postgres, Auth, Realtime, Studio in Docker
+    npm run db:fresh         migrations + sample data + a session per roommate
+    npm run dev              http://localhost:3000
+    npm run ui:open          two signed-in browser windows (needs Playwright)
+
+Supabase Studio: http://127.0.0.1:54323
+Shut the stack down with `npm run db:stop`.
+
+
+6. Verification (run before pushing)
+------------------------------------
+    npm run check        typecheck + lint + unit tests
+    npm run test:sql     schema/RLS/RPC checks in a throwaway Postgres (Docker)
+    npm run test:db      end-to-end via the real API, incl. realtime (local stack up)
+    npm run test:local   all three of the above, in order
+
+    npm run test:ui      browser checks; needs Playwright, a fresh `db:fresh`,
+                         and `npm run dev` running on :3000
+                         (BASE_URL=http://localhost:3001 if that port is taken)
+
+
+7. Knowledge a contributor needs before changing code
+-----------------------------------------------------
+Read CLAUDE.md and README.md first. The constraints that are not discoverable
+from the code:
+
+  - Money is integer cents everywhere. Never introduce float dollars.
+  - Expenses are written only through the create_expense / update_expense RPCs,
+    which reject splits that don't sum to the total.
+  - Row-level security is the security boundary; lib/dal.ts only produces tidy
+    404s. Membership decides what you can see, authorship what you can change.
+  - Every new migration must grant its own privileges (revoke from anon, grant
+    to authenticated, plus replica identity / publication for Realtime).
+  - Auth checks go in pages, not layouts.
+  - This shadcn build sits on Base UI, not Radix: use render={<X />}, not asChild.
+  - This is Next.js 16 — read node_modules/next/dist/docs/ rather than relying
+    on older conventions.
